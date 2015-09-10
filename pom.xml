@@ -189,6 +189,11 @@
 			<artifactId>w3c-utils</artifactId>
 			<version>1.0.0</version>
 		</dependency>
+		<dependency>
+				<groupId>org.yaml</groupId>
+				<artifactId>snakeyaml</artifactId>
+				<version>1.15</version>
+			</dependency>
 	</dependencies>
 </project>
 
