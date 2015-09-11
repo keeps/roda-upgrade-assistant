@@ -1,17 +1,17 @@
 package org.roda.external;
 
-import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.rmi.RemoteException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -20,8 +20,8 @@ import java.util.Map;
 import java.util.Set;
 
 import org.apache.commons.io.IOUtils;
+import org.apache.log4j.Logger;
 import org.roda.model.ModelService;
-import org.roda.model.ModelServiceException;
 import org.roda.storage.DefaultStoragePath;
 import org.roda.storage.StorageService;
 import org.roda.storage.StorageServiceException;
@@ -53,207 +53,169 @@ import pt.gov.dgarq.roda.core.data.adapter.sort.Sorter;
 import pt.gov.dgarq.roda.core.data.preservation.RepresentationFilePreservationObject;
 import pt.gov.dgarq.roda.core.stubs.Browser;
 
-public class Migrator {
-  RODAClient client;
-  Browser browser;
-  Downloader downloader;
-  StorageService fs;
-  ModelService ms;
-  File log;
-  File agentLog;
-  File errorLog;
-  File timeLog;
-  File timeLog2;
-  List<String> pids;
-  long beginning;
-  int counter;
-  String ip;
-  String username;
-  String password;
+/**
+ * Class/command-line utility for migrating all AIPs from roda 1.x to 2.x
+ * 
+ * @author Sebastien Leroux <sleroux@keep.pt>
+ * @author Hélder Silva <hsilva@keep.pt>
+ */
+public class Migrator implements Runnable {
+  private static final Logger LOGGER = Logger.getLogger(Migrator.class);
+  private static final int AIPS_PER_CYCLE = 200;
 
-  public Migrator(String ip, String username, String password, StorageService storage, List<String> pids)
+  private RODAClient client;
+  private Browser browser;
+  private Downloader downloader;
+  private StorageService fs;
+  private ModelService ms;
+  private int counter;
+  public boolean sucessfulRun;
+  private String rodaCoreUrl;
+  private String rodaCoreUsername;
+  private String rodaCorePassword;
+
+  public Migrator(String rodaCoreUrl, String rodaCoreUsername, String rodaCorePassword, StorageService storage)
     throws LoginException, RODAClientException, StorageServiceException, IOException, DownloaderException {
-    log = new File("log.txt");
-    agentLog = new File("agents.txt");
-    errorLog = new File("errors.txt");
-    timeLog = new File("time.txt");
-    timeLog2 = new File("time2.txt");
-    writeToLog(log, "Creating client...", true, true);
-    client = new RODAClient(new URL(ip), username, password);
+    LOGGER.info("Creating client...");
+    client = new RODAClient(new URL(rodaCoreUrl), rodaCoreUsername, rodaCorePassword);
     browser = client.getBrowserService();
     downloader = client.getDownloader();
-    writeToLog(log, "Client created...", true, true);
+    LOGGER.info("Client created...");
     this.fs = storage;
     this.ms = new ModelService(this.fs);
-    this.pids = pids;
-    this.beginning = System.currentTimeMillis();
     this.counter = 0;
-    this.ip = ip;
-    this.username = username;
-    this.password = password;
-    // fs.createContainer(DefaultStoragePath.parse("AIP"), new HashMap<String,
-    // Set<String>>());
-    // fs.createContainer(DefaultStoragePath.parse("Preservation"), new
-    // HashMap<String, Set<String>>());
-    // fs.createContainer(DefaultStoragePath.parse("Preservation", "agents"),
-    // new HashMap<String, Set<String>>());
+    this.sucessfulRun = true;
+    this.rodaCoreUrl = rodaCoreUrl;
+    this.rodaCoreUsername = rodaCoreUsername;
+    this.rodaCorePassword = rodaCorePassword;
   }
 
-  public RODAClient getClient() {
-    return client;
-  }
+  @Override
+  public void run() {
+    try {
+      String[] pids;
+      Set<String> agentPids = new HashSet<String>();
+      sucessfulRun = true;
 
-  public void setClient(RODAClient client) {
-    this.client = client;
-  }
+      LOGGER.info("Getting PIDS...");
+      pids = client.getBrowserService().getDOPIDs();
+      LOGGER.info("Obtained " + pids.length + " PIDS");
 
-  private boolean start() throws RODAClientException, LoginException, DownloaderException, BrowserException,
-    NoSuchRODAObjectException, IOException, StorageServiceException, ModelServiceException {
-    writeToLog(log, "START", true, true);
-   
-    writeToLog(log, "Getting PIDS...", true, true);
-    String[] pids = client.getBrowserService().getDOPIDs();
-    writeToLog(log, "PIDS: " + pids.length, true, true);
-    Set<String> agentPids = new HashSet<String>();
-
-    /*
-     * LinkedHashSet<String> allPids = new LinkedHashSet<String>();
-     * 
-     * for(String pid : pids){
-     * 
-     * List<String> parents = getParents(pid); List<String> children =
-     * getAllChildrens(pid);
-     * 
-     * allPids.add(pid); allPids.addAll(parents); allPids.addAll(children); }
-     * 
-     * 
-     * for(String s : allPids){ System.out.println(s); }
-     */
-
-    boolean endSuccess = true;
-
-    for (String pid : pids) {
-      long startPID = System.currentTimeMillis();
-      boolean process = true;
-      try {
-        writeToLog(log, "Checking if AIP " + pid + " already exists...", true, true);
-        fs.getDirectory(DefaultStoragePath.parse("AIP", pid));
-        writeToLog(log, "Exists...", true, true);
-        process = false;
-      } catch (Throwable t) {
-        writeToLog(log, "Doesn't exist...", true, true);
-        process = true;
-      }
-      if (process) {
-        try {
-          RODAObjectPermissions doPermissions = client.getBrowserService().getRODAObjectPermissions(pid);
-          DescriptionObject doDescriptionObject = client.getBrowserService().getDescriptionObject(pid);
-          fs.createDirectory(DefaultStoragePath.parse("AIP", pid),
-            getProperties(pid, doDescriptionObject, doPermissions));
-          fs.createDirectory(DefaultStoragePath.parse("AIP", pid, "metadata"),
-            getProperties("metadata", doDescriptionObject, doPermissions));
-          fs.createDirectory(DefaultStoragePath.parse("AIP", pid, "metadata", "descriptive"),
-            getProperties("descriptive", doDescriptionObject, doPermissions));
-          fs.createDirectory(DefaultStoragePath.parse("AIP", pid, "metadata", "preservation"),
-            getProperties("preservation", doDescriptionObject, doPermissions));
-          fs.createDirectory(DefaultStoragePath.parse("AIP", pid, "data"),
-            getProperties(pid, doDescriptionObject, doPermissions));
-
-          DefaultStoragePath binaryPath = DefaultStoragePath.parse("AIP", pid, "metadata", "descriptive", "ead-c.xml");
-          Map<String, Set<String>> properties = new HashMap<String, Set<String>>();
-          createBinaryFromStream(binaryPath, downloader.getFile(pid, "EAD-C"), properties, ".xml");
-
-          RepresentationPreservationObject[] preservationObjects = browser.getDOPreservationObjects(pid);
-          if (preservationObjects != null) {
-
-            for (RepresentationPreservationObject pObj : preservationObjects) {
-              if (pObj.getRepresentationObjectPID() != null) {
-                RepresentationObject rObject = browser.getRepresentationObject(pObj.getRepresentationObjectPID());
-                RODAObjectPermissions rPermissions = browser.getRODAObjectPermissions(rObject.getPid());
-
-                fs.createDirectory(DefaultStoragePath.parse("AIP", pid, "data", pObj.getRepresentationObjectPID()),
-                  getRepresentationProperties(pObj.getRepresentationObjectPID(), rObject, rPermissions, pObj));
-                fs.createDirectory(
-                  DefaultStoragePath.parse("AIP", pid, "metadata", "preservation", pObj.getRepresentationObjectPID()),
-                  null);
-
-                copyDatastreams(pid, pObj, downloader, rPermissions);
-
-                EventPreservationObject[] repEvents = browser.getPreservationEvents(pObj.getPid());
-                if (repEvents == null) {
-                  repEvents = new EventPreservationObject[] {};
-                }
-
-                for (EventPreservationObject repEvent : repEvents) {
-                  String eventPid = repEvent.getPid();
-                  binaryPath = DefaultStoragePath.parse("AIP", pid, "metadata", "preservation",
-                    pObj.getRepresentationObjectPID(), "event_" + eventPid.replace(':', '_') + ".premis.xml");
-                  properties = new HashMap<String, Set<String>>();
-                  createBinaryFromStream(binaryPath, downloader.getFile(eventPid, "PREMIS"), properties, ".premis.xml");
-                  agentPids.add(repEvent.getAgentPID());
-                  writeToLog(agentLog, repEvent.getAgentPID(), false, false);
-                }
-              }
-              String roPid = pObj
-                .getRepresentationObjectPID();/*
-                                               * pObj.getRootFile().
-                                               * getContentLocationValue().split
-                                               * ("/")[0];
-                                               */
-              if (roPid != null && !roPid.trim().equals("")) {
-                System.out.println("Save representations(doPidO=" + pid + ",roPID=" + roPid);
-                saveRepresentationObject(pid, roPid, client);
-              }
-            }
-          }
-          // ms.retrieveAIP(pid);
-          counter++;
-          long stopPID = System.currentTimeMillis();
-          if(counter%200==0){ 
-            client = new RODAClient(new URL(ip), username, password);
-            browser = client.getBrowserService();
-            downloader = client.getDownloader();
-          }
-          
-          
-          /*
-           * if(counter%10==0){ //writeToLog(timeLog, createStatLogLine(),
-           * false); long current = System.currentTimeMillis();
-           * writeToLog(timeLog,"PIDS PROCESSED: "+getNumberOfChildren(new
-           * File(new File("STORAGE"),"AIP"))+" FOLDERSIZE: "
-           * +humanReadableByteCount(FileUtils.sizeOfDirectory(new
-           * File("STORAGE")),true) +" TIME ELAPSED:"
-           * +((current-beginning)/1000)+" s",false,true); }
-           */
-          writeToLog(timeLog2, "PID processed in " + ((stopPID - startPID) / 1000) + " s", false, true);
-        } catch (Throwable t) {
-          endSuccess = false;
-          writeToLog(errorLog, "" + pid + "Error: " + t.getMessage(), true, true);
-          try {
-            ms.deleteAIP(pid);
-          } catch (Throwable t1) {
-            writeToLog(errorLog, "Error deleting AIP " + pid + " : " + t.getMessage(), true, true);
-          }
+      for (String pid : pids) {
+        long startPID = System.currentTimeMillis();
+        boolean processAIP = true;
+        processAIP = verifyIfAIPShouldBeProcessed(pid);
+        if (processAIP) {
+          processAIP(pid, agentPids, startPID);
         }
       }
-
+    } catch (BrowserException | RemoteException | RODAClientException e) {
+      LOGGER.error("Error obtaining AIPs PIDS", e);
     }
-    return endSuccess;
-    /*
-     * if(agentPids!=null){ for (String agentPid : agentPids) {
-     * if(agentPid!=null){ try{
-     * 
-     * DefaultStoragePath binaryPath = DefaultStoragePath.parse("Preservation",
-     * "agents", "agent_" + agentPid.replace(':', '_') + ".premis.xml");
-     * Map<String,Set<String>> properties = new HashMap<String, Set<String>>();
-     * createBinaryFromStream(binaryPath,downloader.getFile(agentPid,
-     * "PREMIS"),properties,".premis.xml"); }catch(Throwable t){ writeToLog(log,
-     * "Error writing agent: "+t.getMessage(),true); } } } }
-     */
   }
 
-  private long getNumberOfChildren(File file) {
-    return file.list().length;
+  private void processAIP(String pid, Set<String> agentPids, long startPID) {
+    try {
+      // get DO and permissions
+      RODAObjectPermissions doPermissions = client.getBrowserService().getRODAObjectPermissions(pid);
+      DescriptionObject doDescriptionObject = client.getBrowserService().getDescriptionObject(pid);
+
+      // create necessary folders for AIP
+      createFoldersForAIP(pid, doPermissions, doDescriptionObject);
+
+      // get and store descriptive metadata
+      DefaultStoragePath binaryPath = DefaultStoragePath.parse("AIP", pid, "metadata", "descriptive", "ead-c.xml");
+      Map<String, Set<String>> properties = new HashMap<String, Set<String>>();
+      createBinaryFromStream(binaryPath, downloader.getFile(pid, "EAD-C"), properties, ".xml");
+
+      // see if DO representations have preservation information
+      RepresentationPreservationObject[] preservationObjects = browser.getDOPreservationObjects(pid);
+      if (preservationObjects != null) {
+
+        for (RepresentationPreservationObject pObj : preservationObjects) {
+          String roPid = pObj.getRepresentationObjectPID();
+          if (roPid != null) {
+            // get RO and permissions
+            RepresentationObject rObject = browser.getRepresentationObject(roPid);
+            RODAObjectPermissions rPermissions = browser.getRODAObjectPermissions(rObject.getPid());
+
+            createFoldersForPreservationObject(pid, pObj, rObject, rPermissions);
+
+            copyDatastreams(pid, pObj, downloader, rPermissions);
+
+            EventPreservationObject[] repEvents = browser.getPreservationEvents(pObj.getPid());
+            if (repEvents != null) {
+              for (EventPreservationObject repEvent : repEvents) {
+                String eventPid = repEvent.getPid();
+                binaryPath = DefaultStoragePath.parse("AIP", pid, "metadata", "preservation", roPid,
+                  "event_" + eventPid.replace(':', '_') + ".premis.xml");
+                properties = new HashMap<String, Set<String>>();
+                createBinaryFromStream(binaryPath, downloader.getFile(eventPid, "PREMIS"), properties, ".premis.xml");
+                agentPids.add(repEvent.getAgentPID());
+                LOGGER.info(repEvent.getAgentPID());
+              }
+            }
+
+            LOGGER.info("Save representations(doPidO=" + pid + ",roPID=" + roPid);
+            saveRepresentationObject(pid, roPid, client);
+          }
+
+        }
+      }
+      // ms.retrieveAIP(pid);
+      counter++;
+      long stopPID = System.currentTimeMillis();
+      if (counter % AIPS_PER_CYCLE == 0) {
+        client = new RODAClient(new URL(rodaCoreUrl), rodaCoreUsername, rodaCorePassword);
+        browser = client.getBrowserService();
+        downloader = client.getDownloader();
+      }
+
+      LOGGER.info("AIP processed in " + ((stopPID - startPID) / 1000) + " s");
+    } catch (Throwable t) {
+      sucessfulRun = false;
+      LOGGER.error("Error processing AIP with pid " + pid, t);
+      try {
+        ms.deleteAIP(pid);
+      } catch (Throwable t1) {
+        LOGGER.error("Error deleting AIP with pid " + pid, t1);
+      }
+    }
+  }
+
+  private void createFoldersForAIP(String pid, RODAObjectPermissions doPermissions,
+    DescriptionObject doDescriptionObject) throws StorageServiceException, IOException {
+    fs.createDirectory(DefaultStoragePath.parse("AIP", pid), getProperties(pid, doDescriptionObject, doPermissions));
+    fs.createDirectory(DefaultStoragePath.parse("AIP", pid, "metadata"),
+      getProperties("metadata", doDescriptionObject, doPermissions));
+    fs.createDirectory(DefaultStoragePath.parse("AIP", pid, "metadata", "descriptive"),
+      getProperties("descriptive", doDescriptionObject, doPermissions));
+    fs.createDirectory(DefaultStoragePath.parse("AIP", pid, "metadata", "preservation"),
+      getProperties("preservation", doDescriptionObject, doPermissions));
+    fs.createDirectory(DefaultStoragePath.parse("AIP", pid, "data"),
+      getProperties(pid, doDescriptionObject, doPermissions));
+  }
+
+  private void createFoldersForPreservationObject(String pid, RepresentationPreservationObject pObj,
+    RepresentationObject rObject, RODAObjectPermissions rPermissions) throws StorageServiceException, IOException {
+    fs.createDirectory(DefaultStoragePath.parse("AIP", pid, "data", pObj.getRepresentationObjectPID()),
+      getRepresentationProperties(pObj.getRepresentationObjectPID(), rObject, rPermissions, pObj));
+    fs.createDirectory(
+      DefaultStoragePath.parse("AIP", pid, "metadata", "preservation", pObj.getRepresentationObjectPID()), null);
+  }
+
+  private boolean verifyIfAIPShouldBeProcessed(String pid) {
+    boolean processAIP;
+    try {
+      LOGGER.info("Checking if AIP " + pid + " already exists in the file system...");
+      fs.getDirectory(DefaultStoragePath.parse("AIP", pid));
+      LOGGER.info("  Exists!");
+      processAIP = false;
+    } catch (StorageServiceException t) {
+      LOGGER.info("  Doesn't exist!");
+      processAIP = true;
+    }
+    return processAIP;
   }
 
   private void createBinaryFromStream(DefaultStoragePath binaryPath, InputStream file,
@@ -267,7 +229,8 @@ public class Migrator {
     temp = null;
   }
 
-  public String humanReadableByteCount(long bytes, boolean si) {
+  @SuppressWarnings("unused")
+  private String humanReadableByteCount(long bytes, boolean si) {
     int unit = si ? 1000 : 1024;
     if (bytes < unit)
       return bytes + " B";
@@ -276,41 +239,7 @@ public class Migrator {
     return String.format("%.1f %sB", bytes / Math.pow(unit, exp), pre);
   }
 
-  public void writeToLog(File logFile, String msg, boolean addTimestamp, boolean sysout) {
-    if (sysout) {
-      System.out.println(msg);
-    }
-    FileWriter fileWriter = null;
-    BufferedWriter bufferedWriter = null;
-    try {
-      fileWriter = new FileWriter(logFile.getAbsoluteFile(), true); // true to
-                                                                    // append
-      bufferedWriter = new BufferedWriter(fileWriter);
-      if (addTimestamp) {
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyy/MM/dd HH:mm");
-        Date resultdate = new Date(System.currentTimeMillis());
-        bufferedWriter.write(sdf.format(resultdate) + " - ");
-        bufferedWriter.write(msg);
-      }
-      bufferedWriter.write(msg);
-      bufferedWriter.newLine();
-      bufferedWriter.close();
-      fileWriter.close();
-    } catch (IOException e) {
-      e.printStackTrace();
-    }
-    try {
-      bufferedWriter.close();
-    } catch (Throwable t) {
-
-    }
-    try {
-      fileWriter.close();
-    } catch (Throwable t) {
-
-    }
-  }
-
+  @SuppressWarnings("unused")
   private List<String> getParents(String pid) {
     List<String> parents = new ArrayList<String>();
     try {
@@ -323,11 +252,12 @@ public class Migrator {
         pid = d.getParentPID();
       }
     } catch (Throwable t) {
-      writeToLog(log, "Error getting parents of " + pid + ": " + t.getMessage(), true, true);
+      LOGGER.error("Error getting parents of " + pid + ": " + t.getMessage());
     }
     return parents;
   }
 
+  @SuppressWarnings("unused")
   private List<String> getAllChildrens(String pid) throws BrowserException, RemoteException, RODAClientException {
     List<String> children = new ArrayList<String>();
 
@@ -346,34 +276,8 @@ public class Migrator {
     RODAObjectPermissions permissions, RepresentationPreservationObject pObj) throws IOException {
 
     Map<String, Set<String>> data = new HashMap<String, Set<String>>();
-    
-    
-    if (permissions.getGrantGroups() != null && permissions.getGrantGroups().length > 0) {
-      data.put("grant.groups", Sets.newHashSet(permissions.getGrantGroups()));
-    }
-    if (permissions.getGrantUsers() != null && permissions.getGrantUsers().length > 0) {
-      data.put("grant.users", Sets.newHashSet(permissions.getGrantUsers()));
-    }
-    if (permissions.getModifyGroups() != null && permissions.getModifyGroups().length > 0) {
-      data.put("modify.groups", Sets.newHashSet(permissions.getModifyGroups()));
-    }
-    if (permissions.getModifyUsers() != null && permissions.getModifyUsers().length > 0) {
-      data.put("modify.users", Sets.newHashSet(permissions.getModifyUsers()));
-    }
-    if (permissions.getReadGroups() != null && permissions.getReadGroups().length > 0) {
-      data.put("read.groups", Sets.newHashSet(permissions.getReadGroups()));
-    }
-    if (permissions.getReadUsers() != null && permissions.getReadUsers().length > 0) {
-      data.put("read.users", Sets.newHashSet(permissions.getReadUsers()));
-    }
-    if (permissions.getRemoveGroups() != null && permissions.getRemoveGroups().length > 0) {
-      data.put("remove.groups", Sets.newHashSet(permissions.getRemoveGroups()));
-    }
-    if (permissions.getRemoveUsers() != null && permissions.getRemoveUsers().length > 0) {
-      data.put("remove.users", Sets.newHashSet(permissions.getRemoveUsers()));
-    }
-    
-    
+
+    data = processObjectPermissions(permissions, data);
     data.put("active", Sets.newHashSet("true"));
     data.put("date.created", Sets.newHashSet(dateToString(representationObject.getCreatedDate())));
     data.put("date.modified", Sets.newHashSet(dateToString(representationObject.getLastModifiedDate())));
@@ -386,41 +290,37 @@ public class Migrator {
     data.put("representation.state", Sets.newHashSet(representationObject.getState()));
     data.put("representation.subtype", Sets.newHashSet(representationObject.getSubType()));
     data.put("representation.type", Sets.newHashSet(representationObject.getType()));
-    if (representationObject.getStatuses() != null && representationObject.getStatuses().length > 0) {
-      data.put("representation.statuses", Sets.newHashSet(representationObject.getStatuses()));
+    data = processRepresentationProperty(data, "representation.statuses", representationObject.getStatuses());
+
+    return data;
+  }
+
+  private Map<String, Set<String>> processObjectPermissions(RODAObjectPermissions permissions,
+    Map<String, Set<String>> data) {
+    data = processRepresentationProperty(data, "grant.groups", permissions.getGrantGroups());
+    data = processRepresentationProperty(data, "grant.users", permissions.getGrantUsers());
+    data = processRepresentationProperty(data, "modify.groups", permissions.getModifyGroups());
+    data = processRepresentationProperty(data, "modify.users", permissions.getModifyUsers());
+    data = processRepresentationProperty(data, "read.groups", permissions.getReadGroups());
+    data = processRepresentationProperty(data, "read.users", permissions.getReadUsers());
+    data = processRepresentationProperty(data, "remove.groups", permissions.getRemoveGroups());
+    data = processRepresentationProperty(data, "remove.users", permissions.getRemoveUsers());
+    return data;
+  }
+
+  private Map<String, Set<String>> processRepresentationProperty(Map<String, Set<String>> data, String propertyKey,
+    String[] values) {
+    if (values != null && values.length > 0) {
+      data.put(propertyKey, Sets.newHashSet(values));
     }
     return data;
-
   }
 
   private Map<String, Set<String>> getProperties(String title, RODAObject rodaObject, RODAObjectPermissions permissions)
     throws IOException {
     Map<String, Set<String>> data = new HashMap<String, Set<String>>();
     data.put("name", Sets.newHashSet(title));
-    if (permissions.getGrantGroups() != null && permissions.getGrantGroups().length > 0) {
-      data.put("grant.groups", Sets.newHashSet(permissions.getGrantGroups()));
-    }
-    if (permissions.getGrantUsers() != null && permissions.getGrantUsers().length > 0) {
-      data.put("grant.users", Sets.newHashSet(permissions.getGrantUsers()));
-    }
-    if (permissions.getModifyGroups() != null && permissions.getModifyGroups().length > 0) {
-      data.put("modify.groups", Sets.newHashSet(permissions.getModifyGroups()));
-    }
-    if (permissions.getModifyUsers() != null && permissions.getModifyUsers().length > 0) {
-      data.put("modify.users", Sets.newHashSet(permissions.getModifyUsers()));
-    }
-    if (permissions.getReadGroups() != null && permissions.getReadGroups().length > 0) {
-      data.put("read.groups", Sets.newHashSet(permissions.getReadGroups()));
-    }
-    if (permissions.getReadUsers() != null && permissions.getReadUsers().length > 0) {
-      data.put("read.users", Sets.newHashSet(permissions.getReadUsers()));
-    }
-    if (permissions.getRemoveGroups() != null && permissions.getRemoveGroups().length > 0) {
-      data.put("remove.groups", Sets.newHashSet(permissions.getRemoveGroups()));
-    }
-    if (permissions.getRemoveUsers() != null && permissions.getRemoveUsers().length > 0) {
-      data.put("remove.users", Sets.newHashSet(permissions.getRemoveUsers()));
-    }
+    data = processObjectPermissions(permissions, data);
     if (rodaObject.getCreatedDate() != null) {
       data.put("date.created", Sets.newHashSet(dateToString(rodaObject.getCreatedDate())));
     }
@@ -515,32 +415,57 @@ public class Migrator {
     }
   }
 
+  private static StorageService createStorageForAIPs(String baseOutputDir) throws StorageServiceException {
+    Path path = Paths.get(baseOutputDir, "STORAGE");
+    try {
+      Files.createDirectories(path);
+    } catch (IOException e) {
+      throw new StorageServiceException("Unable to create folder " + path,
+        StorageServiceException.INTERNAL_SERVER_ERROR, e);
+    }
+    StorageService fs = new FileStorageService(path);
+    return fs;
+  }
+
+  public static void printUsageAndExit() {
+    LOGGER.warn("****************************************************");
+    LOGGER.warn("*              RODA Migration Utility              *");
+    LOGGER.warn("****************************************************");
+    LOGGER.warn("- Migrates all AIPs from RODA 1.x to 2.x");
+    LOGGER.warn("");
+    LOGGER.warn("Usage: java -jar Migrator.jar RODA_CORE_URL RODA_CORE_USERNAME RODA_CORE_PASSWORD BASE_OUTPUT_DIR");
+    LOGGER.warn("");
+    LOGGER.warn(
+      "E.g. : java -jar Migrator.jar http://192.168.2.2:8080/roda-core administrator administrator /home/myuser/xpto/");
+    LOGGER.warn("Note : All AIPS will be stored inside BASE_OUTPUT_DIR. E.g. /home/myuser/xpto/STORAGE/");
+    System.exit(1);
+  }
+
   public static void main(String[] args) {
-    if (args.length != 3) {
-      System.out.println("Usage:_java -jar Migrator.jar RODA_CORE_URL RODA_CORE_USERNAME RODA_CORE_PASSWORD");
-      System.exit(1);
+    if (args.length != 4) {
+      printUsageAndExit();
     }
 
     try {
-      File base = new File("STORAGE");
-      base.mkdirs();
-      StorageService fs = new FileStorageService(base.toPath());
-      for (int i = 0; i < args.length; i++) {
-        System.out.println("" + i + " - " + args[i]);
-      }
-      Migrator m = new Migrator(args[0], args[1], args[2], fs, Arrays.asList(args));
+      LOGGER.info("Creating all necessary conditions to start the migration...");
+      StorageService fs = createStorageForAIPs(args[3]);
+      Migrator m = new Migrator(args[0], args[1], args[2], fs);
+
       while (true) {
-        System.out.println("Starting new RUN...");
-        boolean endSuccess = m.start();
-        if (endSuccess) {
+        LOGGER.info("Starting new migration...");
+        m.run();
+        if (m.sucessfulRun) {
           break;
         }
         Thread.sleep(10000);
       }
-      System.out.println("SUCCESS!!!!!!!!!");
+      LOGGER.info("Success migrating AIPS from RODA 1.x!");
+    } catch (InterruptedException e) {
+      LOGGER.error("Error while trying to pause (sleep) thread!", e);
     } catch (Exception e) {
-      e.printStackTrace();
+      LOGGER.error("Error while creating all the necessary conditions to do the migration!", e);
     }
     System.exit(0);
   }
+
 }
