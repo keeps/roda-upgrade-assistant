@@ -63,6 +63,19 @@ public class Migrator implements Runnable {
   private static final Logger LOGGER = Logger.getLogger(Migrator.class);
   private static final int AIPS_PER_CYCLE = 200;
 
+  public static final String STORAGE_META_PERMISSION_GRANT_USERS = "permission.grant.users";
+  public static final String STORAGE_META_PERMISSION_GRANT_GROUPS = "permission.grant.groups";
+  public static final String STORAGE_META_PERMISSION_READ_USERS = "permission.read.users";
+  public static final String STORAGE_META_PERMISSION_READ_GROUPS = "permission.read.groups";
+  // XXX the following two constants formerly were known as producers
+  // permissions
+  public static final String STORAGE_META_PERMISSION_INSERT_USERS = "permission.insert.users";
+  public static final String STORAGE_META_PERMISSION_INSERT_GROUPS = "permission.insert.groups";
+  public static final String STORAGE_META_PERMISSION_MODIFY_USERS = "permission.modify.users";
+  public static final String STORAGE_META_PERMISSION_MODIFY_GROUPS = "permission.modify.groups";
+  public static final String STORAGE_META_PERMISSION_REMOVE_USERS = "permission.remove.users";
+  public static final String STORAGE_META_PERMISSION_REMOVE_GROUPS = "permission.remove.groups";
+
   private RODAClient client;
   private Browser browser;
   private Downloader downloader;
@@ -297,14 +310,14 @@ public class Migrator implements Runnable {
 
   private Map<String, Set<String>> processObjectPermissions(RODAObjectPermissions permissions,
     Map<String, Set<String>> data) {
-    data = processRepresentationProperty(data, "grant.groups", permissions.getGrantGroups());
-    data = processRepresentationProperty(data, "grant.users", permissions.getGrantUsers());
-    data = processRepresentationProperty(data, "modify.groups", permissions.getModifyGroups());
-    data = processRepresentationProperty(data, "modify.users", permissions.getModifyUsers());
-    data = processRepresentationProperty(data, "read.groups", permissions.getReadGroups());
-    data = processRepresentationProperty(data, "read.users", permissions.getReadUsers());
-    data = processRepresentationProperty(data, "remove.groups", permissions.getRemoveGroups());
-    data = processRepresentationProperty(data, "remove.users", permissions.getRemoveUsers());
+    data = processRepresentationProperty(data, STORAGE_META_PERMISSION_GRANT_GROUPS, permissions.getGrantGroups());
+    data = processRepresentationProperty(data, STORAGE_META_PERMISSION_GRANT_USERS, permissions.getGrantUsers());
+    data = processRepresentationProperty(data, STORAGE_META_PERMISSION_MODIFY_GROUPS, permissions.getModifyGroups());
+    data = processRepresentationProperty(data, STORAGE_META_PERMISSION_MODIFY_USERS, permissions.getModifyUsers());
+    data = processRepresentationProperty(data, STORAGE_META_PERMISSION_READ_GROUPS, permissions.getReadGroups());
+    data = processRepresentationProperty(data, STORAGE_META_PERMISSION_READ_USERS, permissions.getReadUsers());
+    data = processRepresentationProperty(data, STORAGE_META_PERMISSION_REMOVE_GROUPS, permissions.getRemoveGroups());
+    data = processRepresentationProperty(data, STORAGE_META_PERMISSION_REMOVE_USERS, permissions.getRemoveUsers());
     return data;
   }
 
